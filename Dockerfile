@@ -1,19 +1,21 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.10-alpine3.18
+# Debian-based (glibc), not Alpine (musl): libwolfssl_mldsa.so and the
+# WolfSSL runtime lib bind-mounted in from the qkd_client project are built
+# against glibc and won't load under musl's dynamic linker.
+FROM python:3.10-slim-bookworm
 
 ENV HOST=0.0.0.0
-ENV PORT=8090
 ENV PYTHONUNBUFFERED=1
 
 COPY . /opt/next-door-key-simulator
 WORKDIR /opt/next-door-key-simulator
 
-RUN apk add -U --no-cache bash curl
+RUN apt-get update && apt-get install -y --no-install-recommends bash curl \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m ensurepip
-RUN pip3 install --no-cache --upgrade pip setuptools
+RUN pip install --no-cache-dir --upgrade pip setuptools
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip3 install --no-cache -r requirements.txt
-
-CMD python3 app.py
+RUN chmod +x start.sh
+CMD ["./start.sh"]

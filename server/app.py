@@ -10,8 +10,6 @@ from network.broadcaster import Broadcaster
 from network.scanner import Scanner
 from router.external import External
 from router.internal import Internal
-from server import tls
-from server.request_handler import PeerCertWSGIRequestHandler
 
 
 class App:
@@ -55,9 +53,10 @@ class App:
         return response
 
     def __run(self):
+        # Plaintext loopback only — the pqc_tls_proxy process terminates the
+        # real ML-DSA-65 mTLS connection and forwards HTTP here, since
+        # Python's ssl module cannot handle ML-DSA-65 certificates.
         self.app.run(
-            host=os.getenv('HOST'),
-            port=os.getenv('PORT'),
-            ssl_context=tls.create_ssl_context(),
-            request_handler=PeerCertWSGIRequestHandler
+            host="127.0.0.1",
+            port=os.getenv('FLASK_PORT'),
         )

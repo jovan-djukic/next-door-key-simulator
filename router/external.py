@@ -94,8 +94,9 @@ class External:
     def get_key_with_ids(self, request: flask.Request, master_sae_id: str):
         security.ensure_valid_sae_id(request)
 
-        # Get data
-        slave_sae_id = request.environ['client_cert_common_name']
+        # Get data -- CN of the mTLS-authenticated caller, verified and
+        # injected by pqc_tls_proxy.py (see security.ensure_valid_sae_id).
+        slave_sae_id = request.headers.get('X-Peer-CN', '')
 
         # Validate data
         if (
@@ -118,7 +119,7 @@ class External:
 
             selected_keys = list(filter(
                 lambda x: x['key_ID'] in requested_keys,
-                self.key_store.get_keys(master_sae_id, request.environ['client_cert_common_name'])
+                self.key_store.get_keys(master_sae_id, slave_sae_id)
             ))
         except IndexError:
             return {'message': 'The given data is in invalid format.'}, 400
@@ -127,6 +128,6 @@ class External:
             return {'message': 'Some of the requested keys do not exist in this KME.'}, 400
 
         # Remove from the key store and broadcast to other KMEs
-        self.key_store.remove_keys(master_sae_id, request.environ['client_cert_common_name'], selected_keys)
+        self.key_store.remove_keys(master_sae_id, slave_sae_id, selected_keys)
 
         return {'keys': selected_keys}

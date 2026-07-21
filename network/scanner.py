@@ -1,7 +1,10 @@
+import json
 import os
 import threading
+from urllib.parse import urlsplit
 
-import requests
+import pqc_http
+import wolfssl_mldsa
 
 
 class Scanner:
@@ -9,6 +12,11 @@ class Scanner:
         self.kme_list = kme_list
         self.kme_lock = kme_lock
         self.stop = threading.Event()
+
+        self.cert_der = pqc_http.decode_pem(open(os.getenv('KME_CERT')).read())
+        self.ca_der = pqc_http.decode_pem(open(os.getenv('CA_FILE')).read())
+        sk_raw = pqc_http.decode_pem(open(os.getenv('KME_KEY')).read())
+        self.pkcs8_der = wolfssl_mldsa.pkcs8_mldsa65_der(sk_raw)
 
     def start(self) -> None:
         while not self.stop.is_set():
@@ -20,18 +28,20 @@ class Scanner:
 
             for kme in os.getenv('OTHER_KMES').split(','):
                 try:
-                    data = requests.get(
-                        url=f'{kme}/api/v1/kme/status',
-                        verify=False,
-                        cert=(os.getenv('KME_CERT'), os.getenv('KME_KEY'))
-                    ).json()
+                    parts = urlsplit(kme)
+                    status, body = pqc_http.pqc_http_request(
+                        'GET', parts.hostname, parts.port, '/api/v1/kme/status',
+                        self.cert_der, self.pkcs8_der, self.ca_der
+                    )
+                    if status != 200:
+                        print(f'KME {kme} returned status {status}.')
+                        continue
 
+                    data = json.loads(body.decode())
                     self.kme_list.append(data)
-                except requests.exceptions.RequestException as exception:
+                except Exception as exception:
                     print(f'Unable to fetch KME status for {kme}.')
                     print(exception)
-                except requests.exceptions.JSONDecodeError:
-                    print(f'KME {kme} did not return a valid JSON response.')
 
             new_kme_list = set(list(map(lambda x: x['KME_ID'], self.kme_list)) + old_kme_list)
 

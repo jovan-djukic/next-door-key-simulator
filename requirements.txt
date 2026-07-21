@@ -11,7 +11,6 @@ Jinja2==3.1.6
 MarkupSafe==3.0.2
 packaging==25.0
 pycparser==2.22
-pyOpenSSL==25.1.0
 python-dotenv==1.1.1
 requests==2.32.4
 urllib3==2.5.0

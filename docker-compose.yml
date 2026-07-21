@@ -1,75 +1,125 @@
+# 4 KMEs = 2 QKD links (link0: relay R0<->R1, link1: relay R1<->R2),
+# each link backed by 2 KME instances (start side / end side), matching
+# controller.py's LINKS array.
+#
+# Each container runs two processes (see start.sh):
+#   - pqc_tls_proxy.py : terminates real ML-DSA-65 mTLS on PORT (WolfSSL-backed;
+#     Python's ssl module can't handle ML-DSA-65 certs) and forwards HTTP to...
+#   - app.py            : the original ETSI 014 KME logic, plaintext on
+#                          127.0.0.1:FLASK_PORT only.
+#
+# Two separate CAs (see certs/generate_pqc_certs.py):
+#   - CA_FILE       : the KME CA (../../kme_ca) -- signs this KME's own server
+#     cert, and is what peer KMEs' certs are checked against.
+#   - RELAY_CA_FILE : a copy of the Relay CA (../../pqc_ca) -- what a
+#     connecting relay's client cert is checked against. A relay presents its
+#     one PQC identity cert (Relay CA-signed) as its SAE cert; there is no
+#     separate KME-facing cert for it. pqc_tls_proxy.py picks exactly one of
+#     these two CAs per connection based on which endpoint was requested.
+#
+# Certs are NOT bind-mounted: the Dockerfile's `COPY . ...` already bakes
+# ./certs into the image (generate_pqc_certs.py writes there by default), so
+# re-run that script and `docker compose up --build` whenever certs change.
+#
+# wolfssl_mldsa.py/.so and the WolfSSL runtime lib live at the qkd_client
+# project root, outside this service's build context, so those (unlike
+# certs) ARE bind-mounted -- one copy of the PQC crypto code for the whole
+# system rather than a vendored copy in the image. Adjust paths accordingly if you move this docker-compose.yml file.
+
+x-kme-common: &kme-common
+  build: .
+  restart: always
+  volumes:
+    - ../../wolfssl_mldsa.py:/opt/next-door-key-simulator/wolfssl_mldsa.py:ro
+    - ../../libwolfssl_mldsa.so:/opt/next-door-key-simulator/libwolfssl_mldsa.so:ro
+    - ../../external/wolfssl/_install_linux_shared/lib:/opt/wolfssl/lib:ro
+
+x-kme-env: &kme-env
+  HOST: "0.0.0.0"
+  PORT: "8443"
+  FLASK_PORT: "18000"
+  LD_LIBRARY_PATH: "/opt/wolfssl/lib"
+  CA_FILE: "/opt/next-door-key-simulator/certs/ca.crt.pem"
+  RELAY_CA_FILE: "/opt/next-door-key-simulator/certs/relay_ca.crt.pem"
+  DEFAULT_KEY_SIZE: "32"
+  MAX_KEY_COUNT: "100000"
+  MAX_KEYS_PER_REQUEST: "128"
+  MAX_KEY_SIZE: "1024"
+  MIN_KEY_SIZE: "32"
+  KEY_GEN_SEC_TO_GEN: "30"
+
 services:
-  kme-1:
-    image: creeppork/next-door-key-simulator:latest
-    build: .
-    container_name: kme-1
-    restart: always
+  kme-link0-start:
+    <<: *kme-common
+    container_name: kme-link0-start
     environment:
-      - PORT=8010
-      - KME_ID=9b7703f1-9b6d-403d-b850-18a1b6fd6d8f
-      - ATTACHED_SAE_ID=25840139-0dd4-49ae-ba1e-b86731601803
-      - DEFAULT_KEY_SIZE=32
-      - MAX_KEY_COUNT=100000
-      - MAX_KEYS_PER_REQUEST=128
-      - MAX_KEY_SIZE=1024
-      - MIN_KEY_SIZE=32
-      - KEY_GEN_SEC_TO_GEN=30
-      - OTHER_KMES=https://172.23.1.20:8020
-      - CA_FILE=/certs/ca.crt.pem
-      - KME_CERT=/certs/kme-1.crt.pem
-      - KME_KEY=/certs/kme-1.key.pem
-      - SAE_CERT=/certs/sae-1.crt.pem
-    volumes:
-      - ./certs:/certs:ro
+      <<: *kme-env
+      KME_ID: "kme-link0-start"
+      ATTACHED_SAE_ID: "R0"
+      OTHER_KMES: "https://172.23.1.11:8443"
+      KME_CERT: "/opt/next-door-key-simulator/certs/kme-link0-start.crt.pem"
+      KME_KEY: "/opt/next-door-key-simulator/certs/kme-link0-start.key.pem"
     ports:
-      - "8010:8010"
-    healthcheck:
-      test: curl -f -k --cert /certs/sae-1.crt.pem --key /certs/sae-1.key.pem https://172.23.1.10:8010/api/v1/keys/c565d5aa-8670-4446-8471-b0e53e315d2a/status || exit 1
-      interval: 1m
-      timeout: 10s
-      retries: 1
+      - "8010:8443"
     networks:
       kme-network:
         ipv4_address: 172.23.1.10
-        aliases:
-          - kme-1
+        aliases: [kme-link0-start]
 
-  kme-2:
-    image: creeppork/next-door-key-simulator:latest
-    build: .
-    container_name: kme-2
-    restart: always
+  kme-link0-end:
+    <<: *kme-common
+    container_name: kme-link0-end
     environment:
-      - PORT=8020
-      - KME_ID=ffb23f4d-5d5b-47e5-a8c5-fe9e47d646cd
-      - ATTACHED_SAE_ID=c565d5aa-8670-4446-8471-b0e53e315d2a
-      - DEFAULT_KEY_SIZE=32
-      - MAX_KEY_COUNT=100000
-      - MAX_KEYS_PER_REQUEST=128
-      - MAX_KEY_SIZE=1024
-      - MIN_KEY_SIZE=32
-      - KEY_GEN_SEC_TO_GEN=30
-      - OTHER_KMES=https://172.23.1.10:8010
-      - CA_FILE=/certs/ca.crt.pem
-      - KME_CERT=/certs/kme-2.crt.pem
-      - KME_KEY=/certs/kme-2.key.pem
-      - SAE_CERT=/certs/sae-2.crt.pem
-    volumes:
-      - ./certs:/certs:ro
+      <<: *kme-env
+      KME_ID: "kme-link0-end"
+      ATTACHED_SAE_ID: "R1"
+      OTHER_KMES: "https://172.23.1.10:8443"
+      KME_CERT: "/opt/next-door-key-simulator/certs/kme-link0-end.crt.pem"
+      KME_KEY: "/opt/next-door-key-simulator/certs/kme-link0-end.key.pem"
     ports:
-      - "8020:8020"
+      - "8011:8443"
     depends_on:
-      - kme-1
-    healthcheck:
-      test: curl -f -k --cert /certs/sae-2.crt.pem --key /certs/sae-2.key.pem https://172.23.1.20:8020/api/v1/keys/25840139-0dd4-49ae-ba1e-b86731601803/status || exit 1
-      interval: 1m
-      timeout: 10s
-      retries: 1
+      - kme-link0-start
     networks:
       kme-network:
-        ipv4_address: 172.23.1.20
-        aliases:
-          - kme-2
+        ipv4_address: 172.23.1.11
+        aliases: [kme-link0-end]
+
+  kme-link1-start:
+    <<: *kme-common
+    container_name: kme-link1-start
+    environment:
+      <<: *kme-env
+      KME_ID: "kme-link1-start"
+      ATTACHED_SAE_ID: "R1"
+      OTHER_KMES: "https://172.23.1.13:8443"
+      KME_CERT: "/opt/next-door-key-simulator/certs/kme-link1-start.crt.pem"
+      KME_KEY: "/opt/next-door-key-simulator/certs/kme-link1-start.key.pem"
+    ports:
+      - "8012:8443"
+    networks:
+      kme-network:
+        ipv4_address: 172.23.1.12
+        aliases: [kme-link1-start]
+
+  kme-link1-end:
+    <<: *kme-common
+    container_name: kme-link1-end
+    environment:
+      <<: *kme-env
+      KME_ID: "kme-link1-end"
+      ATTACHED_SAE_ID: "R2"
+      OTHER_KMES: "https://172.23.1.12:8443"
+      KME_CERT: "/opt/next-door-key-simulator/certs/kme-link1-end.crt.pem"
+      KME_KEY: "/opt/next-door-key-simulator/certs/kme-link1-end.key.pem"
+    ports:
+      - "8013:8443"
+    depends_on:
+      - kme-link1-start
+    networks:
+      kme-network:
+        ipv4_address: 172.23.1.13
+        aliases: [kme-link1-end]
 
 networks:
   kme-network:

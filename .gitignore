@@ -4,3 +4,5 @@
 .idea
 bin
 lib64
+__pycache__/
+*.py[cod]
