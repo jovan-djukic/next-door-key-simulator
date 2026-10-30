@@ -7,6 +7,7 @@ certificates, so all HTTP framing here is done by hand over a WolfSSL
 mTLS connection (wolfssl_mldsa.PqcTlsConn).
 """
 import base64
+import os
 import socket
 
 import wolfssl_mldsa
@@ -48,6 +49,30 @@ def read_http_message(conn) -> bytes:
     return buf[:header_end] + body
 
 
+def other_kmes() -> list:
+    """Return this KME's peers as (url, expected certificate CN) pairs, from
+    the position-matched OTHER_KMES and OTHER_KME_CNS lists."""
+    urls = os.getenv('OTHER_KMES').split(',')
+    cns = os.getenv('OTHER_KME_CNS').split(',')
+    if len(urls) != len(cns):
+        raise ValueError(f'OTHER_KMES has {len(urls)} entries but OTHER_KME_CNS has {len(cns)}')
+    return list(zip(urls, cns))
+
+
+def strip_header(message: bytes, name: str) -> bytes:
+    """Remove every line of a header. '-' and '_' count as the same character,
+    since the WSGI environ can't tell them apart."""
+    def normalize(raw: bytes) -> bytes:
+        return raw.strip().lower().replace(b"_", b"-")
+
+    header_end = message.index(b"\r\n\r\n")
+    head, body = message[:header_end], message[header_end:]
+    lines = head.split(b"\r\n")
+    kept = lines[:1] + [line for line in lines[1:]
+                        if normalize(line.split(b":", 1)[0]) != normalize(name.encode())]
+    return b"\r\n".join(kept) + body
+
+
 def inject_header(message: bytes, name: str, value: str) -> bytes:
     """Insert a header line right after the request/status line."""
     header_end = message.index(b"\r\n\r\n")
@@ -69,13 +94,18 @@ def split_status_and_body(response: bytes):
 
 
 def pqc_http_request(method: str, host: str, port: int, path: str,
-                     cert_der: bytes, pkcs8_der: bytes, ca_der: bytes,
+                     cert_der: bytes, pkcs8_der: bytes, ca_der: bytes, expected_peer_cn: str,
                      json_body: bytes = None, timeout: float = 30):
     """Act as an ML-DSA-65 mTLS client: issue one HTTP request, return
-    (status_code, body_bytes)."""
+    (status_code, body_bytes). Relays and apps hold certs from the same CA, so
+    the server's CN must be the expected KME, not just any CA-signed name."""
     sock = socket.create_connection((host, port), timeout=timeout)
     try:
         with wolfssl_mldsa.pqc_tls_client_connect(sock.fileno(), cert_der, pkcs8_der, ca_der) as conn:
+            peer_cn = wolfssl_mldsa.parse_cert_subject_cn(conn.peer_cert_der())
+            if peer_cn != expected_peer_cn:
+                raise ConnectionError(f"Peer identity mismatch at {host}:{port}: certificate CN is "
+                                      f"{peer_cn!r}, expected {expected_peer_cn!r}")
             if json_body is not None:
                 request = (
                     f"{method} {path} HTTP/1.1\r\n"

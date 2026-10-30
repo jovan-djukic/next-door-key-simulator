@@ -8,7 +8,7 @@ import wolfssl_mldsa
 
 class Broadcaster:
     def __init__(self):
-        self.other_kmes = os.getenv('OTHER_KMES').split(',')
+        self.other_kmes = pqc_http.other_kmes()
         self.cert_der = pqc_http.decode_pem(open(os.getenv('KME_CERT')).read())
         self.ca_der = pqc_http.decode_pem(open(os.getenv('CA_FILE')).read())
         sk_raw = pqc_http.decode_pem(open(os.getenv('KME_KEY')).read())
@@ -27,12 +27,12 @@ class Broadcaster:
     def __broadcast(self, path: str, data: dict) -> None:
         body = json.dumps(data, default=str).encode()
 
-        for kme in self.other_kmes:
+        for kme, kme_cn in self.other_kmes:
             parts = urlsplit(kme)
             try:
                 pqc_http.pqc_http_request(
                     'POST', parts.hostname, parts.port, path,
-                    self.cert_der, self.pkcs8_der, self.ca_der,
+                    self.cert_der, self.pkcs8_der, self.ca_der, kme_cn,
                     json_body=body
                 )
             except Exception as exception:

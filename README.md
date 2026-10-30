@@ -24,15 +24,14 @@ otherwise-unmodified Flask app. See `pqc_tls_proxy.py`, `pqc_http.py`,
 
 - Docker
 - Docker Compose
-- Two qkd_client PQC CAs already generated (see the qkd_client project's
-  `generate_pqc_ca.py`): the Relay CA at `../../pqc_ca/` and the KME CA at
-  `../../kme_ca/` — two independent trust domains, see `docker-compose.yml`.
+- The qkd_client PQC CA already generated at `../../pqc_ca/` (see the qkd_client
+  project's `generate_pqc_ca.py`). It is the one CA for the controller, relays,
+  apps and KMEs, see `docker-compose.yml`.
 
 ## Installation
 
 1. `python3 certs/generate_pqc_certs.py` (defaults already point at
-   `../../kme_ca/` and `../../pqc_ca/`; pass `--ca-cert`/`--ca-key`/
-   `--relay-ca-cert` to override)
+   `../../pqc_ca/`; pass `--ca-cert`/`--ca-key` to override)
 2. `docker compose up -d --build`
 
 Certs are baked into the image at build time (not bind-mounted), so re-run
@@ -48,6 +47,15 @@ The KMEs communicate with each other using proprietary endpoints to share the ge
 This would be implemented by a real KME using quantum protocols).
 
 The KMEs discover each other by only giving their host address (configurable in the `OTHER_KMES` environment variable).
+
+All entities share one CA, so endpoints are authorized by certificate CN:
+
+| Endpoints | Allowed CN |
+|---|---|
+| `/api/v1/keys/...` (SAE) | `ATTACHED_SAE_ID` only |
+| `/api/v1/kme/...` (KME-to-KME) | `OTHER_KME_CNS` only, so relays and apps get 401 |
+
+`OTHER_KME_CNS` also lists the CN expected from each `OTHER_KMES` entry when this KME calls it, in the same order.
 
 ### Implementation details
 

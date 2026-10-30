@@ -8,24 +8,17 @@ Flask over loopback, injecting the verified peer certificate's CommonName as
 an X-Peer-CN header so the app can authorize the caller without ever seeing
 raw TLS state.
 
-Two trust domains, one CA each (see docker-compose.yml / certs/generate_pqc_certs.py):
-  - A relay calling an SAE-facing endpoint (/api/v1/keys/...) presents its
-    one PQC identity cert, signed by the Relay CA.
-  - A peer KME calling an internal endpoint (/api/v1/kme/...) presents its
-    own server cert, signed by the KME CA.
-These are deliberately separate CAs, so the connecting party's cert is only
-ever checked against the ONE CA appropriate for the endpoint it's calling --
-not "accepted if it matches either". Which CA that is isn't known until the
-HTTP request (and therefore its path) has been read, which only happens
-*after* the TLS handshake completes -- so the handshake itself is done with
-pqc_tls_server_accept_unverified() (deferred verification), and the actual
-verify_cert_der() check happens here once the path is known.
+One CA for every entity (see docker-compose.yml / certs/generate_pqc_certs.py),
+so the handshake only proves that the caller holds *some* cert from that CA.
+That doesn't say which kind of entity it is: relays, apps and KMEs all pass.
+Deciding who may call what is done per route in server/security.py, from the
+CommonName passed on here. A client-supplied X-Peer-CN is removed first, so
+that header only ever carries the verified name.
 
 Env vars (see .env.example):
   HOST, PORT        - external address this shim listens on (SAE/KME-facing)
   FLASK_PORT        - loopback port the Flask app binds to
-  CA_FILE           - KME CA certificate (PEM) -- trusted for peer-KME calls
-  RELAY_CA_FILE     - Relay CA certificate (PEM) -- trusted for relay calls
+  CA_FILE           - the CA certificate (PEM) every caller must be signed by
   KME_CERT          - this KME's own ML-DSA-65 certificate (PEM)
   KME_KEY           - this KME's own ML-DSA-65 private key (raw-key PEM wrapper)
 """
@@ -40,33 +33,21 @@ import wolfssl_mldsa
 
 load_dotenv('.env')
 
-KME_INTERNAL_PREFIX = "/api/v1/kme/"
-
 
 def _load_pem(path: str) -> str:
     with open(path, 'r') as f:
         return f.read()
 
 
-def _request_path(request: bytes) -> str:
-    """Extract the path from an HTTP request's start line, e.g.
-    b"GET /api/v1/keys/R0/status HTTP/1.1\\r\\n..." -> "/api/v1/keys/R0/status"."""
-    start_line = request.split(b"\r\n", 1)[0]
-    parts = start_line.split(b" ")
-    return parts[1].decode() if len(parts) >= 2 else ""
-
-
-def handle_connection(raw_sock, cert_der, pkcs8_der, kme_ca_der, relay_ca_der, flask_port):
+def handle_connection(raw_sock, cert_der, pkcs8_der, ca_der, flask_port):
     try:
         peer_addr = raw_sock.getpeername()
     except OSError:
         peer_addr = "?"
 
     try:
-        # ctx_ca_der is only a formality for WolfSSL's context setup here --
-        # the real check happens below once we know which CA applies.
-        conn = wolfssl_mldsa.pqc_tls_server_accept_unverified(
-            raw_sock.fileno(), cert_der, pkcs8_der, kme_ca_der)
+        conn = wolfssl_mldsa.pqc_tls_server_accept(
+            raw_sock.fileno(), cert_der, pkcs8_der, ca_der)
     except Exception as e:
         print(f"[pqc-proxy] handshake with {peer_addr} failed: {e}")
         raw_sock.close()
@@ -77,16 +58,8 @@ def handle_connection(raw_sock, cert_der, pkcs8_der, kme_ca_der, relay_ca_der, f
         if not request:
             return
 
-        path = _request_path(request)
-        expected_ca = kme_ca_der if path.startswith(KME_INTERNAL_PREFIX) else relay_ca_der
-
-        peer_cert_der = conn.peer_cert_der()
-        if not wolfssl_mldsa.verify_cert_der(peer_cert_der, expected_ca):
-            print(f"[pqc-proxy] rejecting {peer_addr}: cert did not verify against the "
-                  f"{'KME' if expected_ca is kme_ca_der else 'Relay'} CA for {path}")
-            return
-
-        peer_cn = wolfssl_mldsa.parse_cert_subject_cn(peer_cert_der)
+        peer_cn = wolfssl_mldsa.parse_cert_subject_cn(conn.peer_cert_der())
+        request = pqc_http.strip_header(request, "X-Peer-CN")
         request = pqc_http.inject_header(request, "X-Peer-CN", peer_cn)
 
         with socket.create_connection(("127.0.0.1", flask_port), timeout=30) as flask_sock:
@@ -112,8 +85,7 @@ def main():
     flask_port = int(os.getenv('FLASK_PORT'))
 
     cert_der = pqc_http.decode_pem(_load_pem(os.getenv('KME_CERT')))
-    kme_ca_der = pqc_http.decode_pem(_load_pem(os.getenv('CA_FILE')))
-    relay_ca_der = pqc_http.decode_pem(_load_pem(os.getenv('RELAY_CA_FILE')))
+    ca_der = pqc_http.decode_pem(_load_pem(os.getenv('CA_FILE')))
     sk_raw = pqc_http.decode_pem(_load_pem(os.getenv('KME_KEY')))
     pkcs8_der = wolfssl_mldsa.pkcs8_mldsa65_der(sk_raw)
 
@@ -127,7 +99,7 @@ def main():
         raw_sock, _ = listener.accept()
         t = threading.Thread(
             target=handle_connection,
-            args=(raw_sock, cert_der, pkcs8_der, kme_ca_der, relay_ca_der, flask_port),
+            args=(raw_sock, cert_der, pkcs8_der, ca_der, flask_port),
             daemon=True
         )
         t.start()

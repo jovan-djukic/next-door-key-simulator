@@ -3,6 +3,7 @@ import os
 import flask
 
 from keys.key_store import KeyStore
+from server import security
 
 
 # noinspection PyMethodMayBeStatic
@@ -10,18 +11,24 @@ class Internal:
     def __init__(self, key_store: KeyStore):
         self.key_store = key_store
 
-    def get_kme_status(self):
+    def get_kme_status(self, request: flask.Request):
+        security.ensure_valid_kme_peer(request)
+
         return {
             'KME_ID': os.getenv('KME_ID'),
             'SAE_ID': os.getenv('ATTACHED_SAE_ID'),
         }
 
-    def get_key_pool(self):
+    def get_key_pool(self, request: flask.Request):
+        security.ensure_valid_kme_peer(request)
+
         return {
             'keys': self.key_store.key_pool.keys
         }
 
     def do_kme_key_exchange(self, request: flask.Request):
+        security.ensure_valid_kme_peer(request)
+
         data = request.get_json()
 
         return self.key_store.append_keys(
@@ -31,6 +38,8 @@ class Internal:
             do_broadcast=False)
 
     def do_remove_kme_key(self, request: flask.Request):
+        security.ensure_valid_kme_peer(request)
+
         data = request.get_json()
 
         self.key_store.remove_keys(

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Generate ML-DSA-65 identity certificates for the 4 KME containers.
 
-Run this on the host (not in a container) — it needs the KME CA's private
-key, which is never shipped to the KME containers themselves (or to the
-controller/relays — see qkd_client's kme_ca/ vs pqc_ca/: two independent
-trust domains). Output lands in ./certs (this script's directory by
-default), which the Dockerfile bakes into the image via `COPY . ...` — so
-re-run this and `docker compose up --build` whenever certs change; there is
-no runtime bind-mount for them.
+Run this on the host (not in a container) — it needs the CA's private key,
+which is never shipped to the KME containers themselves. This is the one CA
+for the whole qkd_client project (pqc_ca/): controller, relays, apps and KMEs.
+Output lands in ./certs (this script's directory by default), which the
+Dockerfile bakes into the image via `COPY . ...` — so re-run this and
+`docker compose up --build` whenever certs change; there is no runtime
+bind-mount for them.
 
-The containers get: the KME CA certificate (for verifying peer KMEs), a
-copy of the *Relay* CA certificate (for verifying connecting relays — see
-RELAY_CA_FILE), and their own KME-CA-signed cert + key.
+The containers get: the CA certificate (for verifying every caller and peer
+KME) and their own CA-signed cert + key. Which entity may use which endpoint is
+decided by certificate CN, see server/security.py.
 
 This replaces the original next-door-key-simulator's certs/generate.sh: that
 script shelled out to openssl for RSA certs, which can't produce ML-DSA-65
@@ -19,7 +19,7 @@ certificates, so cert generation moved to Python using the same WolfSSL
 bindings (wolfssl_mldsa.py) the rest of the qkd_client project uses.
 
 Usage (run from this certs/ directory -- defaults already point at
-../../../kme_ca and ../../../pqc_ca, i.e. the qkd_client project root):
+../../../pqc_ca, i.e. the qkd_client project root):
   python3 generate_pqc_certs.py
 """
 import argparse
@@ -136,10 +136,8 @@ def decode_pem(pem_str: str) -> bytes:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate ML-DSA-65 certs for the KME containers")
-    parser.add_argument("--ca-cert", default=str(_PROJECT_ROOT / "kme_ca" / "ca_certificate.pem"))
-    parser.add_argument("--ca-key", default=str(_PROJECT_ROOT / "kme_ca" / "ca_private_key.pem"))
-    parser.add_argument("--relay-ca-cert", default=str(_PROJECT_ROOT / "pqc_ca" / "ca_certificate.pem"),
-                        help="Relay CA cert, copied in so KMEs can verify connecting relays")
+    parser.add_argument("--ca-cert", default=str(_PROJECT_ROOT / "pqc_ca" / "ca_certificate.pem"))
+    parser.add_argument("--ca-key", default=str(_PROJECT_ROOT / "pqc_ca" / "ca_private_key.pem"))
     parser.add_argument("--output-dir", default=str(Path(__file__).resolve().parent))
     args = parser.parse_args()
 
@@ -149,16 +147,11 @@ def main():
     ca_der = decode_pem(ca_cert_pem)
     issuer_cn = wolfssl_mldsa.parse_cert_subject_cn(ca_der)
 
-    relay_ca_cert_pem = Path(args.relay_ca_cert).read_text()
-
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     (out_dir / "ca.crt.pem").write_text(ca_cert_pem)
     print(f"Wrote {out_dir / 'ca.crt.pem'} (issuer CN={issuer_cn})")
-
-    (out_dir / "relay_ca.crt.pem").write_text(relay_ca_cert_pem)
-    print(f"Wrote {out_dir / 'relay_ca.crt.pem'} (copy of the Relay CA)")
 
     for i, name in enumerate(KME_NAMES, start=1):
         signer = wolfssl_mldsa.Signature(ALGORITHM)

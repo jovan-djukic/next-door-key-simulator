@@ -8,14 +8,14 @@
 #   - app.py            : the original ETSI 014 KME logic, plaintext on
 #                          127.0.0.1:FLASK_PORT only.
 #
-# Two separate CAs (see certs/generate_pqc_certs.py):
-#   - CA_FILE       : the KME CA (../../kme_ca) -- signs this KME's own server
-#     cert, and is what peer KMEs' certs are checked against.
-#   - RELAY_CA_FILE : a copy of the Relay CA (../../pqc_ca) -- what a
-#     connecting relay's client cert is checked against. A relay presents its
-#     one PQC identity cert (Relay CA-signed) as its SAE cert; there is no
-#     separate KME-facing cert for it. pqc_tls_proxy.py picks exactly one of
-#     these two CAs per connection based on which endpoint was requested.
+# One CA for every entity (../../pqc_ca, see certs/generate_pqc_certs.py):
+#   - CA_FILE       : signs this KME's own cert, and every caller's cert must
+#     chain to it. A relay presents its one PQC identity cert as its SAE cert;
+#     there is no separate KME-facing cert for it.
+#   - ATTACHED_SAE_ID : the only CN allowed on the SAE endpoints (/api/v1/keys/...).
+#   - OTHER_KME_CNS   : the only CNs allowed on the KME-to-KME endpoints
+#     (/api/v1/kme/...), and the CNs this KME expects from OTHER_KMES, position
+#     by position. Being signed by the CA isn't enough on either set of routes.
 #
 # Certs are NOT bind-mounted: the Dockerfile's `COPY . ...` already bakes
 # ./certs into the image (generate_pqc_certs.py writes there by default), so
@@ -40,7 +40,6 @@ x-kme-env: &kme-env
   FLASK_PORT: "18000"
   LD_LIBRARY_PATH: "/opt/wolfssl/lib"
   CA_FILE: "/opt/next-door-key-simulator/certs/ca.crt.pem"
-  RELAY_CA_FILE: "/opt/next-door-key-simulator/certs/relay_ca.crt.pem"
   DEFAULT_KEY_SIZE: "32"
   MAX_KEY_COUNT: "100000"
   MAX_KEYS_PER_REQUEST: "128"
@@ -57,6 +56,7 @@ services:
       KME_ID: "kme-link0-start"
       ATTACHED_SAE_ID: "R0"
       OTHER_KMES: "https://172.23.1.11:8443"
+      OTHER_KME_CNS: "kme-link0-end"
       KME_CERT: "/opt/next-door-key-simulator/certs/kme-link0-start.crt.pem"
       KME_KEY: "/opt/next-door-key-simulator/certs/kme-link0-start.key.pem"
     ports:
@@ -74,6 +74,7 @@ services:
       KME_ID: "kme-link0-end"
       ATTACHED_SAE_ID: "R1"
       OTHER_KMES: "https://172.23.1.10:8443"
+      OTHER_KME_CNS: "kme-link0-start"
       KME_CERT: "/opt/next-door-key-simulator/certs/kme-link0-end.crt.pem"
       KME_KEY: "/opt/next-door-key-simulator/certs/kme-link0-end.key.pem"
     ports:
@@ -93,6 +94,7 @@ services:
       KME_ID: "kme-link1-start"
       ATTACHED_SAE_ID: "R1"
       OTHER_KMES: "https://172.23.1.13:8443"
+      OTHER_KME_CNS: "kme-link1-end"
       KME_CERT: "/opt/next-door-key-simulator/certs/kme-link1-start.crt.pem"
       KME_KEY: "/opt/next-door-key-simulator/certs/kme-link1-start.key.pem"
     ports:
@@ -110,6 +112,7 @@ services:
       KME_ID: "kme-link1-end"
       ATTACHED_SAE_ID: "R2"
       OTHER_KMES: "https://172.23.1.12:8443"
+      OTHER_KME_CNS: "kme-link1-start"
       KME_CERT: "/opt/next-door-key-simulator/certs/kme-link1-end.crt.pem"
       KME_KEY: "/opt/next-door-key-simulator/certs/kme-link1-end.key.pem"
     ports:

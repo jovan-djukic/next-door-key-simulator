@@ -36,12 +36,12 @@ def after_request(response: flask.Response):
 
 @instance.route('/api/v1/kme/status')
 def get_kme_status():
-    return app.internal_routes.get_kme_status()
+    return app.internal_routes.get_kme_status(request)
 
 
 @instance.route('/api/v1/kme/key-pool')
 def get_key_pool():
-    return app.internal_routes.get_key_pool()
+    return app.internal_routes.get_key_pool(request)
 
 
 @instance.route('/api/v1/kme/keys/exchange', methods=['POST'])

@@ -12,6 +12,7 @@ class Scanner:
         self.kme_list = kme_list
         self.kme_lock = kme_lock
         self.stop = threading.Event()
+        self.other_kmes = pqc_http.other_kmes()
 
         self.cert_der = pqc_http.decode_pem(open(os.getenv('KME_CERT')).read())
         self.ca_der = pqc_http.decode_pem(open(os.getenv('CA_FILE')).read())
@@ -20,28 +21,34 @@ class Scanner:
 
     def start(self) -> None:
         while not self.stop.is_set():
-            self.kme_lock.acquire(blocking=True)
+            # Fetched without kme_lock: every request handler takes it, so two
+            # KMEs scanning each other while holding it would deadlock until
+            # the proxy's timeout.
+            fetched = []
 
-            old_kme_list = list(map(lambda x: x['KME_ID'], self.kme_list))
-
-            self.kme_list.clear()
-
-            for kme in os.getenv('OTHER_KMES').split(','):
+            for kme, kme_cn in self.other_kmes:
                 try:
                     parts = urlsplit(kme)
                     status, body = pqc_http.pqc_http_request(
                         'GET', parts.hostname, parts.port, '/api/v1/kme/status',
-                        self.cert_der, self.pkcs8_der, self.ca_der
+                        self.cert_der, self.pkcs8_der, self.ca_der, kme_cn
                     )
                     if status != 200:
                         print(f'KME {kme} returned status {status}.')
                         continue
 
                     data = json.loads(body.decode())
-                    self.kme_list.append(data)
+                    fetched.append(data)
                 except Exception as exception:
                     print(f'Unable to fetch KME status for {kme}.')
                     print(exception)
+
+            self.kme_lock.acquire(blocking=True)
+
+            old_kme_list = list(map(lambda x: x['KME_ID'], self.kme_list))
+
+            self.kme_list.clear()
+            self.kme_list.extend(fetched)
 
             new_kme_list = set(list(map(lambda x: x['KME_ID'], self.kme_list)) + old_kme_list)
 
